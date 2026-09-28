@@ -1,11 +1,11 @@
 # ES32 MicroPython Toolkit
 
-**Software Rev 1.0**  
+**Software Rev 2.0**  
 **Copyright © 2026 Qian Yang. All rights reserved.**
 
-Desktop GUI for **ESP32-S3** boards:
+Desktop GUI for **ESP32** boards (default: Seeed ESP32-S3):
 
-1. Download and flash official MicroPython firmware  
+1. Select board type, then download and flash official MicroPython firmware  
 2. Upload / run Python scripts you edit in Cursor (or any editor)
 
 ---
@@ -13,9 +13,11 @@ Desktop GUI for **ESP32-S3** boards:
 ## Features
 
 ### Flash Firmware
+- Choose board type (ESP32-S3 Seeed, generic ESP32 / S2 / S3 / C3 / C6 / C2 / H2)
+- Match `esptool` chip, flash address, and firmware `.bin` to the selected board
 - Detect serial ports
-- Download latest stable ESP32-S3 firmware from [micropython.org](https://micropython.org/download/SEEED_XIAO_ESP32S3/)
-- Erase flash and write firmware at address `0x0` (`esp32s3`)
+- Download latest stable firmware from [micropython.org](https://micropython.org/download/)
+- Erase flash and write firmware (Seeed ESP32-S3 uses `esp32s3` at `0x0`)
 
 ### Upload Code
 - Select a local `.py` file (e.g. under `scripts/`)
@@ -82,7 +84,7 @@ In Cursor / VS Code, select the interpreter: **`.venv/bin/python`**.
 ### 1. Flash MicroPython (first time)
 
 1. Connect the board with USB-C  
-2. Open **Flash Firmware**  
+2. Open **Flash Firmware**, select the board type  
 3. Click **Refresh**, select the serial port  
 4. Click **Download latest**  
 5. Click **Flash MicroPython**  

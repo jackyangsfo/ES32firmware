@@ -1,5 +1,5 @@
 #!/bin/bash
-# macOS app launcher for ES32 MicroPython Toolkit (Rev 1.0)
+# macOS app launcher for ES32 MicroPython Toolkit (Rev 2.0)
 # Copyright © 2026 Qian Yang. All rights reserved.
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"

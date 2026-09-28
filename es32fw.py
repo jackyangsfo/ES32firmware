@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""GUI: flash MicroPython to ESP32-S3 and upload Python scripts from Cursor.
+"""GUI: flash MicroPython to ESP32 boards and upload Python scripts from Cursor.
 
-Software Rev 1.0
+Software Rev 2.0
 Copyright (c) 2026 Qian Yang. All rights reserved.
 """
 
@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -64,17 +65,55 @@ except ImportError:  # pragma: no cover
     certifi = None
 
 APP_NAME = "ES32 MicroPython Toolkit"
-APP_REV = "1.0"
+APP_REV = "2.0"
 APP_COPYRIGHT = "Copyright © 2026 Qian Yang. All rights reserved."
 APP_TITLE = f"{APP_NAME}  ·  Rev {APP_REV}"
-BOARD_PAGE = "https://micropython.org/download/SEEED_XIAO_ESP32S3/"
 FIRMWARE_BASE = "https://micropython.org"
-CHIP = "esp32s3"
-FLASH_ADDR = "0x0"
 DEFAULT_BAUD = "460800"
 APP_DIR = Path(__file__).resolve().parent
 FIRMWARE_DIR = APP_DIR / "firmware"
 SCRIPTS_DIR = APP_DIR / "scripts"
+
+# Skip specialty images when auto-downloading the generic stable .bin
+_SKIP_FW_MARKERS = ("preview", "spiram", "ota", "unicore", "d2wd")
+
+
+@dataclass(frozen=True)
+class BoardProfile:
+    label: str
+    chip: str
+    flash_addr: str
+    page_slug: str
+    bin_prefix: str
+    extra_prefixes: tuple[str, ...] = ()
+
+    @property
+    def page_url(self) -> str:
+        return f"{FIRMWARE_BASE}/download/{self.page_slug}/"
+
+    def matches_filename(self, filename: str) -> bool:
+        name = Path(filename).name
+        return any(name.startswith(p) for p in (self.bin_prefix, *self.extra_prefixes))
+
+
+BOARDS: tuple[BoardProfile, ...] = (
+    BoardProfile(
+        "ESP32-S3 (Seeed)",
+        "esp32s3",
+        "0x0",
+        "SEEED_XIAO_ESP32S3",
+        "SEEED_XIAO_ESP32S3-",
+    ),
+    BoardProfile("ESP32-S3", "esp32s3", "0x0", "ESP32_GENERIC_S3", "ESP32_GENERIC_S3-"),
+    BoardProfile("ESP32", "esp32", "0x1000", "ESP32_GENERIC", "ESP32_GENERIC-"),
+    BoardProfile("ESP32-S2", "esp32s2", "0x0", "ESP32_GENERIC_S2", "ESP32_GENERIC_S2-"),
+    BoardProfile("ESP32-C3", "esp32c3", "0x0", "ESP32_GENERIC_C3", "ESP32_GENERIC_C3-"),
+    BoardProfile("ESP32-C6", "esp32c6", "0x0", "ESP32_GENERIC_C6", "ESP32_GENERIC_C6-"),
+    BoardProfile("ESP32-C2", "esp32c2", "0x0", "ESP32_GENERIC_C2", "ESP32_GENERIC_C2-"),
+    BoardProfile("ESP32-H2", "esp32h2", "0x0", "ESP32_GENERIC_H2", "ESP32_GENERIC_H2-"),
+)
+BOARD_BY_LABEL = {b.label: b for b in BOARDS}
+DEFAULT_BOARD = BOARDS[0]
 
 
 def ssl_context() -> ssl.SSLContext:
@@ -84,7 +123,7 @@ def ssl_context() -> ssl.SSLContext:
 
 
 def urlopen(url: str, timeout: float = 30):
-    req = urllib.request.Request(url, headers={"User-Agent": "es32fw/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "es32fw/2.0"})
     return urllib.request.urlopen(req, timeout=timeout, context=ssl_context())
 
 
@@ -109,17 +148,20 @@ def port_device(label: str) -> str:
     return label.split("  (", 1)[0].strip()
 
 
-def find_latest_stable_bin(html: str) -> tuple[str, str]:
+def find_latest_stable_bin(html: str, bin_prefix: str) -> tuple[str, str]:
     pattern = re.compile(
-        r'href="(/resources/firmware/(SEEED_XIAO_ESP32S3-[^"]+\.bin))"',
+        rf'href="(/resources/firmware/({re.escape(bin_prefix)}[^"]+\.bin))"',
         re.IGNORECASE,
     )
     for match in pattern.finditer(html):
         path, name = match.group(1), match.group(2)
-        if "preview" in name.lower():
+        lowered = name.lower()
+        if any(marker in lowered for marker in _SKIP_FW_MARKERS):
             continue
         return f"{FIRMWARE_BASE}{path}", name
-    raise RuntimeError("No stable MicroPython .bin found on the download page.")
+    raise RuntimeError(
+        f"No stable MicroPython .bin found for prefix {bin_prefix!r} on the download page."
+    )
 
 
 class FlasherApp(tk.Tk):
@@ -131,8 +173,10 @@ class FlasherApp(tk.Tk):
         self.configure(bg="#f4f6f8")
 
         self.port_var = tk.StringVar()
+        self.board_var = tk.StringVar(value=DEFAULT_BOARD.label)
         self.baud_var = tk.StringVar(value=DEFAULT_BAUD)
         self.firmware_var = tk.StringVar()
+        self.fw_hint_var = tk.StringVar()
         self.erase_first_var = tk.BooleanVar(value=True)
         self.script_var = tk.StringVar()
         self.remote_name_var = tk.StringVar(value="main.py")
@@ -150,6 +194,7 @@ class FlasherApp(tk.Tk):
         self._build_ui()
         self.refresh_ports()
         self.refresh_local_scripts()
+        self.refresh_local_firmware()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_style(self) -> None:
@@ -254,6 +299,19 @@ class FlasherApp(tk.Tk):
         card = ttk.Frame(parent, style="Card.TFrame", padding=14)
         card.pack(fill=tk.X)
 
+        board_row = ttk.Frame(card, style="Card.TFrame")
+        board_row.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(board_row, text="Board", style="Card.TLabel", width=14).pack(side=tk.LEFT)
+        self.board_combo = ttk.Combobox(
+            board_row,
+            textvariable=self.board_var,
+            values=tuple(b.label for b in BOARDS),
+            state="readonly",
+            width=22,
+        )
+        self.board_combo.pack(side=tk.LEFT)
+        self.board_combo.bind("<<ComboboxSelected>>", lambda _e: self.on_board_changed())
+
         baud_row = ttk.Frame(card, style="Card.TFrame")
         baud_row.pack(fill=tk.X, pady=(0, 10))
         ttk.Label(baud_row, text="Baud rate", style="Card.TLabel", width=14).pack(side=tk.LEFT)
@@ -268,17 +326,13 @@ class FlasherApp(tk.Tk):
         fw_row = ttk.Frame(card, style="Card.TFrame")
         fw_row.pack(fill=tk.X, pady=(0, 8))
         ttk.Label(fw_row, text="Firmware .bin", style="Card.TLabel", width=14).pack(side=tk.LEFT)
-        ttk.Entry(fw_row, textvariable=self.firmware_var).pack(
-            side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8)
-        )
+        self.firmware_combo = ttk.Combobox(fw_row, textvariable=self.firmware_var)
+        self.firmware_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
         ttk.Button(fw_row, text="Browse…", command=self.browse_firmware).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(fw_row, text="Download latest", command=self.download_firmware).pack(side=tk.LEFT)
 
-        ttk.Label(
-            card,
-            text="Official MicroPython firmware for ESP32-S3.",
-            style="Hint.TLabel",
-        ).pack(anchor=tk.W)
+        ttk.Label(card, textvariable=self.fw_hint_var, style="Hint.TLabel").pack(anchor=tk.W)
+        self._update_fw_hint()
 
         ttk.Checkbutton(
             card,
@@ -291,8 +345,8 @@ class FlasherApp(tk.Tk):
         ttk.Label(
             tip,
             text=(
-                "1. Connect the ESP32-S3 board with USB-C.\n"
-                "2. If flashing fails: hold BOOT (B), press RESET (R), release BOOT.\n"
+                "1. Connect the board with USB-C and select the matching board type.\n"
+                "2. If flashing fails: hold BOOT, press RESET, release BOOT.\n"
                 "3. Refresh port → Flash MicroPython."
             ),
             style="Card.TLabel",
@@ -310,7 +364,7 @@ class FlasherApp(tk.Tk):
         self._action_buttons.extend([erase_btn, flash_btn])
 
     def _build_code_tab(self, parent: ttk.Frame) -> None:
-        tip = ttk.LabelFrame(parent, text="Workflow (Cursor → ESP32-S3)", padding=12)
+        tip = ttk.LabelFrame(parent, text="Workflow (Cursor → ESP32)", padding=12)
         tip.pack(fill=tk.X)
         ttk.Label(
             tip,
@@ -406,11 +460,47 @@ class FlasherApp(tk.Tk):
             f"{APP_NAME}\n"
             f"Software Rev {APP_REV}\n\n"
             f"{APP_COPYRIGHT}\n\n"
-            "Flash MicroPython to ESP32-S3\n"
+            "Flash MicroPython to ESP32 boards\n"
             "and upload Python scripts from Cursor.",
         )
 
     # ----- shared helpers -----
+
+    def current_board(self) -> BoardProfile:
+        return BOARD_BY_LABEL.get(self.board_var.get(), DEFAULT_BOARD)
+
+    def _update_fw_hint(self) -> None:
+        board = self.current_board()
+        self.fw_hint_var.set(
+            f"Official {board.page_slug}  ·  chip {board.chip}  ·  flash {board.flash_addr}"
+        )
+
+    def on_board_changed(self) -> None:
+        self._update_fw_hint()
+        self.refresh_local_firmware(select_matching=True)
+        board = self.current_board()
+        self.append_log(
+            f"Board: {board.label}  (chip {board.chip}, flash {board.flash_addr})\n"
+        )
+
+    def refresh_local_firmware(self, select_matching: bool = True) -> None:
+        FIRMWARE_DIR.mkdir(parents=True, exist_ok=True)
+        board = self.current_board()
+        matched = sorted(
+            str(p) for p in FIRMWARE_DIR.glob("*.bin") if board.matches_filename(p.name)
+        )
+        current = self.firmware_var.get().strip()
+        values = list(matched)
+        if current and current not in values and Path(current).is_file():
+            values = [current, *values]
+        self.firmware_combo["values"] = values
+        if select_matching:
+            if current in matched:
+                return
+            if matched:
+                self.firmware_var.set(matched[0])
+            elif not current:
+                self.firmware_var.set("")
 
     def refresh_ports(self) -> None:
         ports = list_serial_ports()
@@ -446,6 +536,7 @@ class FlasherApp(tk.Tk):
         )
         if path:
             self.firmware_var.set(path)
+            self.refresh_local_firmware(select_matching=False)
 
     def browse_script(self) -> None:
         path = filedialog.askopenfilename(
@@ -554,21 +645,24 @@ class FlasherApp(tk.Tk):
     def download_firmware(self) -> None:
         if self._busy:
             return
-        self._run_job("Downloading firmware…", self._download_worker)
+        board = self.current_board()
+        self._run_job("Downloading firmware…", lambda: self._download_worker(board))
 
     def erase_flash(self) -> None:
         if not self._require_port():
             return
+        board = self.current_board()
         if not messagebox.askyesno(
             "Erase flash",
-            "This will erase the entire flash on the board.\nContinue?",
+            f"This will erase the entire flash on {board.label} ({board.chip}).\nContinue?",
         ):
             return
-        self._run_job("Erasing flash…", lambda: self._run_esptool(["erase-flash"]))
+        self._run_job("Erasing flash…", lambda: self._run_esptool(["erase-flash"], board=board))
 
     def flash_firmware(self) -> None:
         if not self._require_port():
             return
+        board = self.current_board()
         firmware = self.firmware_var.get().strip()
         if not firmware:
             messagebox.showwarning("Firmware required", "Select or download a .bin firmware first.")
@@ -576,11 +670,18 @@ class FlasherApp(tk.Tk):
         if not Path(firmware).is_file():
             messagebox.showerror("Missing file", f"Firmware not found:\n{firmware}")
             return
+        if not board.matches_filename(firmware) and not messagebox.askyesno(
+            "Firmware mismatch",
+            f"Selected file does not look like {board.label} firmware:\n"
+            f"{Path(firmware).name}\n\nFlash it anyway with chip {board.chip} "
+            f"at {board.flash_addr}?",
+        ):
+            return
 
         def worker() -> None:
             if self.erase_first_var.get():
                 self.set_status("Erasing flash…")
-                self._run_esptool(["erase-flash"])
+                self._run_esptool(["erase-flash"], board=board)
             self.set_status("Writing firmware…")
             self._run_esptool(
                 [
@@ -588,19 +689,20 @@ class FlasherApp(tk.Tk):
                     self.baud_var.get(),
                     "write-flash",
                     "-z",
-                    FLASH_ADDR,
+                    board.flash_addr,
                     firmware,
-                ]
+                ],
+                board=board,
             )
 
-        self._run_job("Flashing MicroPython…", worker)
+        self._run_job(f"Flashing {board.label}…", worker)
 
-    def _download_worker(self) -> None:
+    def _download_worker(self, board: BoardProfile) -> None:
         FIRMWARE_DIR.mkdir(parents=True, exist_ok=True)
-        self.append_log(f"Fetching firmware list from {BOARD_PAGE}\n")
-        with urlopen(BOARD_PAGE, timeout=30) as resp:
+        self.append_log(f"Fetching firmware list from {board.page_url}\n")
+        with urlopen(board.page_url, timeout=30) as resp:
             html = resp.read().decode("utf-8", errors="replace")
-        url, name = find_latest_stable_bin(html)
+        url, name = find_latest_stable_bin(html, board.bin_prefix)
         dest = FIRMWARE_DIR / name
         self.append_log(f"Downloading {name}\n{url}\n")
 
@@ -617,18 +719,23 @@ class FlasherApp(tk.Tk):
                     pct = read * 100 // total
                     self.set_status(f"Downloading… {pct}%")
 
-        self.after(0, lambda: self.firmware_var.set(str(dest)))
+        self.after(0, lambda: self._after_download(dest))
         size_mb = dest.stat().st_size / (1024 * 1024)
         self.append_log(f"Saved {dest} ({size_mb:.2f} MB)\n")
 
-    def _run_esptool(self, args: list[str]) -> None:
+    def _after_download(self, dest: Path) -> None:
+        self.firmware_var.set(str(dest))
+        self.refresh_local_firmware(select_matching=False)
+
+    def _run_esptool(self, args: list[str], board: BoardProfile | None = None) -> None:
+        board = board or self.current_board()
         port = port_device(self.port_var.get())
         cmd = [
             sys.executable,
             "-m",
             "esptool",
             "--chip",
-            CHIP,
+            board.chip,
             "--port",
             port,
             *args,
