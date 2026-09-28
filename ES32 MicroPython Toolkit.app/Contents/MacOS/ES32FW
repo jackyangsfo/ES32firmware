@@ -1,0 +1,25 @@
+#!/bin/bash
+# macOS app launcher for ES32 MicroPython Toolkit (Rev 1.0)
+# Copyright © 2026 Qian Yang. All rights reserved.
+
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+PY="$ROOT/.venv/bin/python"
+SCRIPT="$ROOT/es32fw.py"
+LOG="$ROOT/es32fw_app.log"
+
+show_error() {
+  /usr/bin/osascript -e "display dialog \"$1\" with title \"ES32 MicroPython Toolkit\" buttons {\"OK\"} default button 1 with icon stop" >/dev/null 2>&1 || true
+}
+
+if [[ ! -f "$SCRIPT" ]]; then
+  show_error "Cannot find es32fw.py next to this app.\nExpected:\n$SCRIPT"
+  exit 1
+fi
+
+if [[ ! -x "$PY" ]]; then
+  show_error "Virtual environment not found.\nIn Terminal run:\ncd \"$ROOT\"\npython3 -m venv .venv\nsource .venv/bin/activate\npip install -r requirements.txt"
+  exit 1
+fi
+
+cd "$ROOT" || exit 1
+exec "$PY" "$SCRIPT" >>"$LOG" 2>&1

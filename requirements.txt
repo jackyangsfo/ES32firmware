@@ -1,0 +1,4 @@
+esptool>=5.0
+pyserial>=3.5
+certifi>=2024.0.0
+mpremote>=1.20
